@@ -127,13 +127,23 @@ function getLocalityStats(area) {
   };
 }
 
-function getMatches(search) {
-  const matches = LISTINGS.filter((listing) => {
+function mergeListings(baseListings, liveListings) {
+  const seen = new Set();
+  return [...liveListings, ...baseListings].filter((listing) => {
+    const key = listing.magicBricksId || `${listing.intent}-${listing.lat}-${listing.lng}-${listing.title}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getMatches(search, listingPool = LISTINGS) {
+  const matches = listingPool.filter((listing) => {
     return listing.intent === search.intent && listing.price <= search.budget && listing.beds >= search.beds;
   });
 
   if (matches.length) return matches;
-  return LISTINGS.filter((listing) => listing.intent === search.intent).slice(0, 6);
+  return listingPool.filter((listing) => listing.intent === search.intent).slice(0, 6);
 }
 
 function nearestAreaFromCoords(coords) {
@@ -291,7 +301,7 @@ function LocationSearchSegment({ search, setSearch, compact = false }) {
 
   function chooseLocation(suggestion) {
     const center = suggestion.coords ? [suggestion.coords[1], suggestion.coords[0]] : AREA_CENTERS[suggestion.id];
-    setSearch((current) => ({ ...current, area: suggestion.id, center }));
+    setSearch((current) => ({ ...current, area: suggestion.id, center, locality: suggestion.label }));
     setLocationQuery(suggestion.label);
     setShowSuggestions(false);
     setActiveSuggestion(0);
@@ -999,7 +1009,7 @@ function PropertyDetailPage({ listing, onBack, onMap }) {
   );
 }
 
-function MapScreen({ listings, selectedId, onSelect, onOpenListing, onBack, onSearchArea, mapAreaCount, searchCenter, onVisibleCountChange, search, setSearch, onMapSearch }) {
+function MapScreen({ listings, selectedId, onSelect, onOpenListing, onBack, onSearchArea, mapAreaCount, liveStatus, searchCenter, onVisibleCountChange, search, setSearch, onMapSearch }) {
   const visibleCount = mapAreaCount ?? (searchCenter ? listings.length : listings[0]?.intent === "buy" ? 214 : 838);
   const resultRefs = useRef(new Map());
 
@@ -1031,6 +1041,7 @@ function MapScreen({ listings, selectedId, onSelect, onOpenListing, onBack, onSe
       <section className="map-results-layout">
         <aside className="map-results-pane">
           <h1>{mapAreaCount == null ? visibleCount : mapAreaCount} homes within map area</h1>
+          {liveStatus && <p className="map-area-note">{liveStatus}</p>}
           {(mapAreaCount != null || searchCenter) && <p className="map-area-note">Showing homes around the searched map area first.</p>}
           <div className="map-results-grid">
             {listings.map((listing, index) => (
@@ -1083,6 +1094,7 @@ function App() {
         intent,
         budget,
         beds: 1,
+        locality: params.get("locality") || areaLabel(area),
         center: Number.isFinite(centerLat) && Number.isFinite(centerLng) ? [centerLat, centerLng] : AREA_CENTERS[area] ?? AREA_CENTERS.koregaon_park,
       },
     };
@@ -1094,9 +1106,12 @@ function App() {
   const [detailReturnScreen, setDetailReturnScreen] = useState(initialState.screen === "property" ? "map" : initialState.screen);
   const [areaRankedIds, setAreaRankedIds] = useState(null);
   const [mapAreaCount, setMapAreaCount] = useState(null);
+  const [liveListings, setLiveListings] = useState([]);
+  const [liveStatus, setLiveStatus] = useState("");
+  const listingPool = useMemo(() => mergeListings(LISTINGS, liveListings), [liveListings]);
 
   const listings = useMemo(() => {
-    const matches = getMatches(search);
+    const matches = getMatches(search, listingPool);
     if (!areaRankedIds) return matches;
 
     const rank = new Map(areaRankedIds.map((id, index) => [id, index]));
@@ -1105,7 +1120,36 @@ function App() {
       const rankB = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER;
       return rankA - rankB;
     });
-  }, [areaRankedIds, search]);
+  }, [areaRankedIds, listingPool, search]);
+
+  useEffect(() => {
+    if (screen !== "map") return undefined;
+    const locality = (search.locality || areaLabel(search.area)).trim();
+    if (!locality || locality.length < 3) return undefined;
+
+    const controller = new AbortController();
+    setLiveStatus("Checking MagicBricks...");
+    const timeout = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ locality, intent: search.intent });
+        const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("MagicBricks lookup unavailable");
+        const data = await response.json();
+        setLiveListings(data.listings ?? []);
+        setLiveStatus(data.listings?.length ? `MagicBricks live: ${data.listings.length}` : "No live MagicBricks matches");
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          setLiveListings([]);
+          setLiveStatus("Using saved listings");
+        }
+      }
+    }, 200);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [screen, search.intent, search.locality, search.area]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -1113,6 +1157,7 @@ function App() {
     params.set("area", search.area);
     params.set("intent", search.intent);
     params.set("budget", String(search.budget));
+    if (search.locality) params.set("locality", search.locality);
     if (search.center) {
       params.set("lat", String(search.center[0]));
       params.set("lng", String(search.center[1]));
@@ -1135,7 +1180,7 @@ function App() {
   }
 
   function searchCurrentArea(bounds) {
-    const matches = getMatches(search);
+    const matches = getMatches(search, listingPool);
     const inFrame = matches.filter((listing) => bounds.contains([listing.lat, listing.lng]));
     const outOfFrame = matches.filter((listing) => !bounds.contains([listing.lat, listing.lng]));
     const rankedIds = [...inFrame, ...outOfFrame].map((listing) => listing.id);
@@ -1153,7 +1198,7 @@ function App() {
   }
 
   function openListing(id, returnScreen = screen) {
-    const listing = LISTINGS.find((item) => item.id === id);
+    const listing = listingPool.find((item) => item.id === id);
     if (listing) {
       setSearch((current) => ({
         ...current,
@@ -1192,6 +1237,7 @@ function App() {
           onBack={() => setScreen("home")}
           onSearchArea={searchCurrentArea}
           mapAreaCount={mapAreaCount}
+          liveStatus={liveStatus}
           searchCenter={search.center}
           onVisibleCountChange={setMapAreaCount}
           search={search}
@@ -1201,7 +1247,7 @@ function App() {
       )}
       {screen === "property" && (
         <PropertyDetailPage
-          listing={LISTINGS.find((listing) => listing.id === selectedId)}
+          listing={listingPool.find((listing) => listing.id === selectedId)}
           onBack={backFromListing}
           onMap={mapFromListing}
         />

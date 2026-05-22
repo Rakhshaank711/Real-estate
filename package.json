@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "import:magicbricks": "node scripts/import_public_magicbricks_listings.js",
     "build": "vite build",
     "preview": "vite preview"
   },
