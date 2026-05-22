@@ -27,6 +27,27 @@ const AREA_OPTIONS = [
 
 const TOP_LOCALITY_AREAS = ["koregaon_park", "baner", "kharadi", "viman_nagar", "wakad"];
 
+const LIVE_LOCALITY_CANDIDATES = [
+  ["viman_nagar", "Viman Nagar", [18.5679, 73.9143]],
+  ["kharadi", "Kharadi", [18.5515, 73.9348]],
+  ["koregaon_park", "Koregaon Park", [18.5362, 73.8958]],
+  ["baner", "Baner", [18.559, 73.7868]],
+  ["wakad", "Wakad", [18.5977, 73.7649]],
+  ["nibm_road", "NIBM Road", [18.4773, 73.8996]],
+  ["nibm_annexe", "NIBM Annexe", [18.4658, 73.9024]],
+  ["mohammed_wadi", "Mohammed Wadi", [18.4788, 73.9157]],
+  ["undri", "Undri", [18.4575, 73.9179]],
+  ["hadapsar", "Hadapsar", [18.5089, 73.9259]],
+  ["magarpatta_city", "Magarpatta City", [18.5163, 73.9327]],
+  ["mundhwa", "Mundhwa", [18.5337, 73.9316]],
+  ["kalyani_nagar", "Kalyani Nagar", [18.5463, 73.9033]],
+  ["balewadi", "Balewadi", [18.576, 73.7798]],
+  ["aundh", "Aundh", [18.5602, 73.8077]],
+  ["pashan", "Pashan", [18.5386, 73.7953]],
+  ["kothrud", "Kothrud", [18.5074, 73.8077]],
+  ["hinjewadi", "Hinjewadi", [18.5913, 73.7389]],
+];
+
 const LOCATION_SUGGESTIONS = [
   { id: "koregaon_park", label: "Koregaon Park", detail: "Cafes, premium rentals, central Pune" },
   { id: "baner", label: "Baner", detail: "Balewadi High Street, family societies" },
@@ -185,6 +206,27 @@ function nearestAreaFromLatLng(lat, lng) {
   });
 
   return nearest;
+}
+
+function getLiveLookupLocalitiesForBounds(bounds, inFrameListings) {
+  const center = bounds.getCenter();
+  const labels = new Set(inFrameListings.map((listing) => areaLabel(listing.area)).filter((label) => label && label !== "Pune"));
+
+  const rankedCandidates = LIVE_LOCALITY_CANDIDATES
+    .map(([area, label, [lat, lng]]) => ({
+      area,
+      label,
+      inBounds: bounds.contains([lat, lng]),
+      distance: Math.hypot(center.lat - lat, center.lng - lng),
+    }))
+    .sort((a, b) => Number(b.inBounds) - Number(a.inBounds) || a.distance - b.distance);
+
+  rankedCandidates.forEach((candidate) => {
+    if (candidate.inBounds || labels.size < 8) labels.add(candidate.label);
+  });
+
+  if (!labels.size) labels.add(areaLabel(nearestAreaFromLatLng(center.lat, center.lng)));
+  return [...labels].slice(0, 8);
 }
 
 function HeaderActions({ menuId }) {
@@ -1164,16 +1206,26 @@ function App() {
     setLiveStatus(liveLookupLocalities?.length ? "Checking MagicBricks in map area..." : "Checking MagicBricks...");
     const timeout = window.setTimeout(async () => {
       try {
-        const results = await Promise.all(cleanLocalities.map(async (locality) => {
-          const params = new URLSearchParams({ locality, intent: search.intent });
-          const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
-          if (!response.ok) return [];
-          const data = await response.json();
-          return data.listings ?? [];
-        }));
-        const nextLiveListings = mergeListings([], results.flat());
+        const liveResults = [];
+        const attempted = [];
+
+        for (let index = 0; index < cleanLocalities.length; index += 3) {
+          const batch = cleanLocalities.slice(index, index + 3);
+          attempted.push(...batch);
+          const results = await Promise.all(batch.map(async (locality) => {
+            const params = new URLSearchParams({ locality, intent: search.intent });
+            const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
+            if (!response.ok) return [];
+            const data = await response.json();
+            return data.listings ?? [];
+          }));
+          liveResults.push(...results.flat());
+          if (liveResults.length) break;
+        }
+
+        const nextLiveListings = mergeListings([], liveResults);
         setLiveListings(nextLiveListings);
-        setLiveStatus(nextLiveListings.length ? `MagicBricks live: ${nextLiveListings.length} from ${cleanLocalities.join(", ")}` : "No live MagicBricks matches");
+        setLiveStatus(nextLiveListings.length ? `MagicBricks live: ${nextLiveListings.length} from ${attempted.join(", ")}` : `No live MagicBricks matches after ${attempted.join(", ")}`);
       } catch (error) {
         if (error.name !== "AbortError") {
           setLiveListings([]);
@@ -1222,20 +1274,12 @@ function App() {
     const inFrame = matches.filter((listing) => bounds.contains([listing.lat, listing.lng]));
     const outOfFrame = matches.filter((listing) => !bounds.contains([listing.lat, listing.lng]));
     const rankedIds = [...inFrame, ...outOfFrame].map((listing) => listing.id);
-    const center = bounds.getCenter();
-    const visibleLocalityLabels = [
-      ...new Set([
-        ...inFrame.map((listing) => areaLabel(listing.area)),
-        ...AREA_OPTIONS
-          .filter(([area]) => AREA_CENTERS[area] && bounds.contains(AREA_CENTERS[area]))
-          .map(([, label]) => label),
-      ]),
-    ].filter((label) => label && label !== "Pune");
+    const visibleLocalityLabels = getLiveLookupLocalitiesForBounds(bounds, inFrame);
 
     setAreaRankedIds(rankedIds);
     setMapAreaCount(inFrame.length);
     setSelectedId(null);
-    setLiveLookupLocalities(visibleLocalityLabels.length ? visibleLocalityLabels : [areaLabel(nearestAreaFromLatLng(center.lat, center.lng))]);
+    setLiveLookupLocalities(visibleLocalityLabels);
   }
 
   function runMapSearch(event) {
