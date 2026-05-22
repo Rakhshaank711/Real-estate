@@ -1206,26 +1206,13 @@ function App() {
     setLiveStatus(liveLookupLocalities?.length ? "Checking MagicBricks in map area..." : "Checking MagicBricks...");
     const timeout = window.setTimeout(async () => {
       try {
-        const liveResults = [];
-        const attempted = [];
-
-        for (let index = 0; index < cleanLocalities.length; index += 3) {
-          const batch = cleanLocalities.slice(index, index + 3);
-          attempted.push(...batch);
-          const results = await Promise.all(batch.map(async (locality) => {
-            const params = new URLSearchParams({ locality, intent: search.intent });
-            const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
-            if (!response.ok) return [];
-            const data = await response.json();
-            return data.listings ?? [];
-          }));
-          liveResults.push(...results.flat());
-          if (liveResults.length) break;
-        }
-
-        const nextLiveListings = mergeListings([], liveResults);
+        const params = new URLSearchParams({ locality: cleanLocalities.join("|"), intent: search.intent });
+        const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("MagicBricks lookup unavailable");
+        const data = await response.json();
+        const nextLiveListings = mergeListings([], data.listings ?? []);
         setLiveListings(nextLiveListings);
-        setLiveStatus(nextLiveListings.length ? `MagicBricks live: ${nextLiveListings.length} from ${attempted.join(", ")}` : `No live MagicBricks matches after ${attempted.join(", ")}`);
+        setLiveStatus(nextLiveListings.length ? `MagicBricks live: ${nextLiveListings.length}` : "Showing saved listings");
       } catch (error) {
         if (error.name !== "AbortError") {
           setLiveListings([]);

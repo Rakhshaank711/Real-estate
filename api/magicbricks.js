@@ -12,8 +12,23 @@ function slugCandidates(locality) {
     nibm: ["nibm-road", "nibm-annexe", "mohammed-wadi", "undri", "nibm"],
     "nibm-road": ["nibm-road", "nibm-annexe", "mohammed-wadi", "undri"],
     "nibm-annexe": ["nibm-annexe", "nibm-road", "mohammed-wadi", "undri"],
+    mundhwa: ["mundhwa", "keshav-nagar", "koregaon-park-annexe", "magarpatta-city", "kharadi"],
+    "kalyani-nagar": ["kalyani-nagar", "viman-nagar", "koregaon-park", "mundhwa"],
+    "magarpatta-city": ["magarpatta-city", "hadapsar", "mundhwa", "kharadi"],
+    hadapsar: ["hadapsar", "magarpatta-city", "amanora-park-town", "kharadi"],
+    kharadi: ["kharadi", "eon-free-zone", "wagholi", "viman-nagar", "magarpatta-city"],
+    "viman-nagar": ["viman-nagar", "lohegaon", "kalyani-nagar", "kharadi"],
+    baner: ["baner", "balewadi", "pashan", "aundh"],
+    wakad: ["wakad", "hinjewadi", "tathawade", "pimple-saudagar"],
   };
   return aliases[slug] || [slug];
+}
+
+function localityCandidates(localityParam) {
+  return String(localityParam || "")
+    .split("|")
+    .map((locality) => locality.trim())
+    .filter((locality) => locality.length >= 3);
 }
 
 function decodeMagicBricksId(url) {
@@ -140,18 +155,35 @@ async function fetchListings({ locality, intent }) {
 }
 
 export default async function handler(request, response) {
-  const locality = String(request.query.locality || "").trim();
+  const localities = localityCandidates(request.query.locality);
   const intent = request.query.intent === "buy" ? "buy" : "rent";
 
-  if (!locality || locality.length < 3) {
+  if (!localities.length) {
     response.status(400).json({ listings: [], error: "Missing locality" });
     return;
   }
 
   try {
-    const result = await fetchListings({ locality, intent });
+    const attempted = [];
+    const allListings = [];
+
+    for (const locality of localities.slice(0, 10)) {
+      const result = await fetchListings({ locality, intent });
+      attempted.push(...(result.attempted ?? [result.sourceUrl]).filter(Boolean));
+      allListings.push(...result.listings);
+      if (allListings.length >= 10) break;
+    }
+
+    const seen = new Set();
+    const listings = allListings.filter((listing) => {
+      const key = listing.magicBricksId || `${listing.lat}-${listing.lng}-${listing.title}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
     response.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=86400");
-    response.status(200).json(result);
+    response.status(200).json({ listings, attempted, status: listings.length ? 200 : 404 });
   } catch (error) {
     response.status(500).json({ listings: [], error: error.message });
   }
