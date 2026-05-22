@@ -13,6 +13,7 @@ const AREA_CENTERS = {
   kharadi: [18.5515, 73.9348],
   viman_nagar: [18.5679, 73.9143],
   wakad: [18.5977, 73.7649],
+  nibm_road: [18.4773, 73.8996],
 };
 
 const AREA_OPTIONS = [
@@ -21,7 +22,10 @@ const AREA_OPTIONS = [
   ["kharadi", "Kharadi"],
   ["viman_nagar", "Viman Nagar"],
   ["wakad", "Wakad"],
+  ["nibm_road", "NIBM Road"],
 ];
+
+const TOP_LOCALITY_AREAS = ["koregaon_park", "baner", "kharadi", "viman_nagar", "wakad"];
 
 const LOCATION_SUGGESTIONS = [
   { id: "koregaon_park", label: "Koregaon Park", detail: "Cafes, premium rentals, central Pune" },
@@ -29,6 +33,11 @@ const LOCATION_SUGGESTIONS = [
   { id: "kharadi", label: "Kharadi", detail: "EON IT Park, WTC, airport side" },
   { id: "wakad", label: "Wakad", detail: "Hinjewadi commute, newer projects" },
   { id: "viman_nagar", label: "Viman Nagar", detail: "Airport side, Phoenix Marketcity, rentals" },
+  { id: "nibm_road", label: "NIBM", detail: "NIBM Road, NIBM Annexe, Mohammed Wadi side" },
+  { id: "nibm_road", label: "NIBM Road", detail: "South Pune rentals and gated societies" },
+  { id: "nibm_road", label: "NIBM Annexe", detail: "Near Undri and Mohammed Wadi" },
+  { id: "nibm_road", label: "Mohammed Wadi", detail: "Near NIBM Road and Undri" },
+  { id: "nibm_road", label: "Undri", detail: "South Pune, near NIBM Annexe" },
   { id: "kharadi", label: "Kalyani Nagar", detail: "Premium river-side apartments" },
   { id: "koregaon_park", label: "Koregaon Park Annexe", detail: "Near Mundhwa and Kalyani Nagar" },
   { id: "koregaon_park", label: "Mundhwa", detail: "Near KP, Magarpatta, Kharadi commute" },
@@ -154,6 +163,21 @@ function nearestAreaFromCoords(coords) {
 
   Object.entries(AREA_CENTERS).forEach(([area, [areaLat, areaLon]]) => {
     const distance = Math.hypot(lat - areaLat, lon - areaLon);
+    if (distance < nearestDistance) {
+      nearest = area;
+      nearestDistance = distance;
+    }
+  });
+
+  return nearest;
+}
+
+function nearestAreaFromLatLng(lat, lng) {
+  let nearest = "koregaon_park";
+  let nearestDistance = Number.MAX_SAFE_INTEGER;
+
+  Object.entries(AREA_CENTERS).forEach(([area, [areaLat, areaLng]]) => {
+    const distance = Math.hypot(lat - areaLat, lng - areaLng);
     if (distance < nearestDistance) {
       nearest = area;
       nearestDistance = distance;
@@ -343,7 +367,14 @@ function LocationSearchSegment({ search, setSearch, compact = false }) {
         autoComplete="off"
         onFocus={() => setShowSuggestions(true)}
         onChange={(event) => {
-          setLocationQuery(event.target.value);
+          const value = event.target.value;
+          const exactSuggestion = LOCATION_SUGGESTIONS.find((item) => item.label.toLowerCase() === value.trim().toLowerCase());
+          setLocationQuery(value);
+          setSearch((current) => ({
+            ...current,
+            locality: value,
+            ...(exactSuggestion ? { area: exactSuggestion.id, center: AREA_CENTERS[exactSuggestion.id] } : {}),
+          }));
           setShowSuggestions(true);
           setActiveSuggestion(0);
         }}
@@ -452,7 +483,7 @@ function updateSearchIntent(setSearch, intent) {
 function HomeScreen({ search, setSearch, onSearch, onOpenListing }) {
   const primaryCards = useMemo(() => getHomeCards({ area: search.area, intent: search.intent }), [search.area, search.intent]);
   const secondaryCards = useMemo(() => getHomeCards({ area: search.area, intent: search.intent, excludeArea: true }), [search.area, search.intent]);
-  const localityStats = useMemo(() => AREA_OPTIONS.map(([area]) => getLocalityStats(area)), []);
+  const localityStats = useMemo(() => TOP_LOCALITY_AREAS.map((area) => getLocalityStats(area)), []);
   const selectedAreaLabel = areaLabel(search.area);
   const budgetShortcuts = [
     { label: "Under Rs 25k rent", detail: "Budget rentals", intent: "rent", budget: 25000, beds: 1, area: search.area },
@@ -1108,6 +1139,7 @@ function App() {
   const [mapAreaCount, setMapAreaCount] = useState(null);
   const [liveListings, setLiveListings] = useState([]);
   const [liveStatus, setLiveStatus] = useState("");
+  const [liveLookupLocalities, setLiveLookupLocalities] = useState(null);
   const listingPool = useMemo(() => mergeListings(LISTINGS, liveListings), [liveListings]);
 
   const listings = useMemo(() => {
@@ -1124,19 +1156,24 @@ function App() {
 
   useEffect(() => {
     if (screen !== "map") return undefined;
-    const locality = (search.locality || areaLabel(search.area)).trim();
-    if (!locality || locality.length < 3) return undefined;
+    const localities = liveLookupLocalities?.length ? liveLookupLocalities : [search.locality || areaLabel(search.area)];
+    const cleanLocalities = [...new Set(localities.map((locality) => locality.trim()).filter((locality) => locality.length >= 3))];
+    if (!cleanLocalities.length) return undefined;
 
     const controller = new AbortController();
-    setLiveStatus("Checking MagicBricks...");
+    setLiveStatus(liveLookupLocalities?.length ? "Checking MagicBricks in map area..." : "Checking MagicBricks...");
     const timeout = window.setTimeout(async () => {
       try {
-        const params = new URLSearchParams({ locality, intent: search.intent });
-        const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
-        if (!response.ok) throw new Error("MagicBricks lookup unavailable");
-        const data = await response.json();
-        setLiveListings(data.listings ?? []);
-        setLiveStatus(data.listings?.length ? `MagicBricks live: ${data.listings.length}` : "No live MagicBricks matches");
+        const results = await Promise.all(cleanLocalities.map(async (locality) => {
+          const params = new URLSearchParams({ locality, intent: search.intent });
+          const response = await fetch(`/api/magicbricks?${params.toString()}`, { signal: controller.signal });
+          if (!response.ok) return [];
+          const data = await response.json();
+          return data.listings ?? [];
+        }));
+        const nextLiveListings = mergeListings([], results.flat());
+        setLiveListings(nextLiveListings);
+        setLiveStatus(nextLiveListings.length ? `MagicBricks live: ${nextLiveListings.length} from ${cleanLocalities.join(", ")}` : "No live MagicBricks matches");
       } catch (error) {
         if (error.name !== "AbortError") {
           setLiveListings([]);
@@ -1149,7 +1186,7 @@ function App() {
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [screen, search.intent, search.locality, search.area]);
+  }, [screen, search.intent, search.locality, search.area, liveLookupLocalities]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -1171,6 +1208,7 @@ function App() {
     eventOrSearch?.preventDefault?.();
     setAreaRankedIds(null);
     setMapAreaCount(null);
+    setLiveLookupLocalities(null);
     setSearch((current) => {
       const next = overrideSearch ? { ...current, ...overrideSearch } : current;
       return { ...next, center: next.center ?? AREA_CENTERS[next.area] ?? PUNE_MAP_CENTER };
@@ -1184,16 +1222,27 @@ function App() {
     const inFrame = matches.filter((listing) => bounds.contains([listing.lat, listing.lng]));
     const outOfFrame = matches.filter((listing) => !bounds.contains([listing.lat, listing.lng]));
     const rankedIds = [...inFrame, ...outOfFrame].map((listing) => listing.id);
+    const center = bounds.getCenter();
+    const visibleLocalityLabels = [
+      ...new Set([
+        ...inFrame.map((listing) => areaLabel(listing.area)),
+        ...AREA_OPTIONS
+          .filter(([area]) => AREA_CENTERS[area] && bounds.contains(AREA_CENTERS[area]))
+          .map(([, label]) => label),
+      ]),
+    ].filter((label) => label && label !== "Pune");
 
     setAreaRankedIds(rankedIds);
     setMapAreaCount(inFrame.length);
     setSelectedId(null);
+    setLiveLookupLocalities(visibleLocalityLabels.length ? visibleLocalityLabels : [areaLabel(nearestAreaFromLatLng(center.lat, center.lng))]);
   }
 
   function runMapSearch(event) {
     event.preventDefault();
     setAreaRankedIds(null);
     setMapAreaCount(null);
+    setLiveLookupLocalities(null);
     setSelectedId(null);
   }
 
@@ -1220,6 +1269,7 @@ function App() {
   function mapFromListing() {
     setAreaRankedIds(null);
     setMapAreaCount(null);
+    setLiveLookupLocalities(null);
     setScreen("map");
   }
 

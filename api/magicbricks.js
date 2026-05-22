@@ -6,6 +6,16 @@ function slugifyLocality(value = "") {
     .replace(/^-+|-+$/g, "");
 }
 
+function slugCandidates(locality) {
+  const slug = slugifyLocality(locality);
+  const aliases = {
+    nibm: ["nibm-road", "nibm-annexe", "mohammed-wadi", "undri", "nibm"],
+    "nibm-road": ["nibm-road", "nibm-annexe", "mohammed-wadi", "undri"],
+    "nibm-annexe": ["nibm-annexe", "nibm-road", "mohammed-wadi", "undri"],
+  };
+  return aliases[slug] || [slug];
+}
+
 function decodeMagicBricksId(url) {
   const encoded = url.match(/id=([0-9a-fA-F]+)/)?.[1];
   if (!encoded || encoded.length % 2) return null;
@@ -88,8 +98,7 @@ function hashSlug(slug) {
   return [...slug].reduce((total, char) => total + char.charCodeAt(0), 0) * 97;
 }
 
-async function fetchListings({ locality, intent }) {
-  const slug = slugifyLocality(locality);
+async function fetchListingsForSlug({ locality, intent, slug }) {
   const url = intent === "buy"
     ? `https://www.magicbricks.com/flats-in-${slug}-pune-for-sale-pppfs`
     : `https://www.magicbricks.com/flats-for-rent-in-${slug}-pune-pppfr`;
@@ -118,6 +127,16 @@ async function fetchListings({ locality, intent }) {
     .filter(Boolean);
 
   return { listings, sourceUrl: url, status: 200 };
+}
+
+async function fetchListings({ locality, intent }) {
+  const attempted = [];
+  for (const slug of slugCandidates(locality)) {
+    const result = await fetchListingsForSlug({ locality, intent, slug });
+    attempted.push(result.sourceUrl);
+    if (result.listings.length) return { ...result, attempted };
+  }
+  return { listings: [], sourceUrl: attempted[0], attempted, status: 404 };
 }
 
 export default async function handler(request, response) {
